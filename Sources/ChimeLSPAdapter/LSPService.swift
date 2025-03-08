@@ -5,7 +5,9 @@ import UniformTypeIdentifiers
 import ChimeExtensionInterface
 import LanguageClient
 import LanguageServerProtocol
+#if canImport(ProcessEnv)
 import ProcessEnv
+#endif
 
 public enum LSPServiceError: Error {
     case unsupported
@@ -23,9 +25,14 @@ public enum LSPServiceError: Error {
 public final class LSPService {
     public typealias ExecutionParamsProvider = () async throws -> Process.ExecutionParameters
 
+	public enum Execution {
+		case hosted(ExecutionParamsProvider)
+		case hostedWithUserShell(ExecutionParamsProvider)
+		case unixScript(path: String, arguments: [String])
+	}
+
     private let serverOptions: any Codable
-    private let executionParamsProvider: ExecutionParamsProvider
-	private let runInUserShell: Bool
+	private let execution: Execution
     private var projectServices: [URL: LSPProjectService]
 	private let logger = Logger(subsystem: "com.chimehq.ChimeKit", category: "LSPService")
 
@@ -35,6 +42,19 @@ public final class LSPService {
 	/// Write raw LSP messages to the console.
 	public let logMessages: Bool
 
+	public init(host: HostProtocol,
+				serverOptions: any Codable = [:] as [String: String],
+				transformers: LSPTransformers = .init(),
+				execution: Execution,
+				logMessages: Bool = false) {
+		self.host = host
+		self.transformers = transformers
+		self.projectServices = [:]
+		self.serverOptions = serverOptions
+		self.execution = execution
+		self.logMessages = logMessages
+	}
+
 	/// Create an LSPService object.
 	///
 	/// - Parameter host: The `HostProtocol`-conforming object the service will communicate with.
@@ -43,21 +63,24 @@ public final class LSPService {
 	/// - Parameter executionParamsProvider: A function that produces the configuration required to launch the language server
 	/// - Parameter runInUserShell: run the server within the user's shell environment
 	/// - Parameter logMessages: log the raw JSON-RPC messages to and from the server
-	public init(host: HostProtocol,
+	public convenience init(host: HostProtocol,
 				serverOptions: any Codable = [:] as [String: String],
 				transformers: LSPTransformers = .init(),
 				executionParamsProvider: @escaping ExecutionParamsProvider,
 				runInUserShell: Bool = false,
 				logMessages: Bool = false) {
-		self.host = host
-		self.transformers = transformers
-		self.projectServices = [:]
-		self.serverOptions = serverOptions
-		self.executionParamsProvider = executionParamsProvider
-		self.runInUserShell = runInUserShell
-		self.logMessages = logMessages
+		let execution = runInUserShell ? Execution.hostedWithUserShell(executionParamsProvider) : Execution.hosted(executionParamsProvider)
+
+		self.init(
+			host: host,
+			serverOptions: serverOptions,
+			transformers: transformers,
+			execution: execution,
+			logMessages: logMessages
+		)
 	}
 
+	#if os(macOS)
 	/// Create an LSPService object.
 	///
 	/// - Parameter host: The `HostProtocol`-conforming object the service will communicate with.
@@ -81,6 +104,7 @@ public final class LSPService {
 				  executionParamsProvider: provider,
 				  logMessages: logMessages)
 	}
+#endif
 
     private func connection(for context: DocumentContext) -> LSPProjectService? {
         guard let projContext = context.projectContext else {
@@ -106,13 +130,14 @@ extension LSPService: ApplicationService {
 		logger.info("Opening project at \(url, privacy: .public)")
 		precondition(projectServices[url] == nil)
 
-		let conn = LSPProjectService(context: context,
-									 host: host,
-									 serverOptions: serverOptions,
-									 transformers: transformers,
-									 executionParamsProvider: executionParamsProvider,
-									 runInUserShell: runInUserShell,
-									 logMessages: logMessages)
+		let conn = LSPProjectService(
+			context: context,
+			host: host,
+			serverOptions: serverOptions,
+			transformers: transformers,
+			execution: execution,
+			logMessages: logMessages
+		)
 
 		self.projectServices[url] = conn
 	}
@@ -138,11 +163,11 @@ extension LSPService: ApplicationService {
 		try connection(for: context)?.willCloseDocument(with: context)
 	}
 
-	public func documentService(for context: DocumentContext) throws -> DocumentService? {
+	public func documentService(for context: DocumentContext) throws -> (some DocumentService)? {
 		try connection(for: context)?.documentService(for: context)
 	}
 
-	public func symbolService(for context: ProjectContext) throws -> SymbolQueryService? {
+	public func symbolService(for context: ProjectContext) throws -> (some SymbolQueryService)? {
 		// error - we need to know about all projects
 		guard let conn = projectServices[context.url] else {
 			throw LSPServiceError.noProjectConnection(context.url)
@@ -155,6 +180,7 @@ extension LSPService: ApplicationService {
 extension LSPService {
 	/// Search the user's PATH for an executable
 	public static func pathExecutableParamsProvider(name: String, host: HostProtocol) async throws -> Process.ExecutionParameters {
+#if os(macOS)
 		let userEnv = try await host.captureUserEnvironment()
 
 		let whichParams = Process.ExecutionParameters(path: "/usr/bin/which", arguments: [name], environment: userEnv)
@@ -169,5 +195,8 @@ extension LSPService {
 		let path = output.trimmingCharacters(in: .whitespacesAndNewlines)
 
 		return .init(path: path, environment: userEnv)
+#else
+		throw LSPServiceError.unsupported
+#endif
 	}
 }

@@ -80,7 +80,7 @@ extension LSPDocumentService: DocumentService {
 		let params = DidChangeTextDocumentParams(textDocument: versionedId,
 												 contentChanges: events)
 
-		try await serverHostInterface.server.didChangeTextDocument(params: params)
+		try await serverHostInterface.server.textDocumentDidChange(params)
 	}
 
 	func didApplyChange(_ change: CombinedTextChange) throws {
@@ -119,19 +119,19 @@ extension LSPDocumentService: DocumentService {
 		serverHostInterface.enqueue(barrier: true) { server, _, _ in
 			let params = WillSaveTextDocumentParams(textDocument: id, reason: .manual)
 
-			try await server.willSaveTextDocument(params: params)
+			try await server.textDocumentWillSave(params)
 		}
 	}
 
 	func didSave() throws {
 	}
 
-	var completionService: CompletionService? { return self }
-	var formattingService: FormattingService? { return self }
-	var semanticDetailsService: SemanticDetailsService? { return self }
-	var defintionService: DefinitionService?  { return self }
-	var tokenService: TokenService? { return self }
-	var symbolService: SymbolQueryService?  { return nil }
+	var completionService: (some CompletionService)? { return self }
+	var formattingService: (some FormattingService)? { return self }
+	var semanticDetailsService: (some SemanticDetailsService)? { return self }
+	var defintionService: (some DefinitionService)?  { return self }
+	var tokenService: (some TokenService)? { return self }
+	var symbolService: (some SymbolQueryService)?  { return nil as SymbolQueryServicePlaceholder? }
 }
 
 extension LSPDocumentService: CompletionService {
@@ -146,7 +146,7 @@ extension LSPDocumentService: CompletionService {
 			let params = CompletionParams(textDocument: textDocId, position: lspPosition, context: lspContext)
 
 			do {
-				let response = try await server.completion(params: params)
+				let response = try await server.completion(params)
 				
 
 				let fallbackRange = TextRange.range(NSRange(location: location, length: 0))
@@ -179,7 +179,7 @@ extension LSPDocumentService: FormattingService {
 											insertSpaces: configuration.indentIsSoft)
 			let params = DocumentFormattingParams(textDocument: textDocId, options: options)
 
-			let response = try await server.formatting(params: params)
+			let response = try await server.formatting(params)
 
 			let transformer = transformers.textEditsTransformer
 
@@ -212,7 +212,7 @@ extension LSPDocumentService: FormattingService {
 								 end: Position(line: 1, character: 0))
 			let params = CodeActionParams(textDocument: textDocId, range: range, context: context)
 
-			let response = try await server.codeAction(params: params)
+			let response = try await server.codeAction(params)
 
 			return transformers.organizeImportsTransformer(uri, response)
 		}
@@ -225,7 +225,7 @@ extension LSPDocumentService: SemanticDetailsService {
 			let textDocId = try context.textDocumentIdentifier
 			let params = TextDocumentPositionParams(textDocument: textDocId, position: position.lspPosition)
 
-			let response = try await server.hover(params: params)
+			let response = try await server.hover(params)
 
 			return transformers.hoverTransformer(position, response)
 		}
@@ -238,7 +238,7 @@ extension LSPDocumentService: DefinitionService {
 			let textDocId = try context.textDocumentIdentifier
 			let params = TextDocumentPositionParams(textDocument: textDocId, position: position.lspPosition)
 
-			let definition = try await server.definition(params: params)
+			let definition = try await server.definition(params)
 
 			return transformers.definitionTransformer(definition)
 		}
@@ -257,13 +257,13 @@ extension LSPDocumentService: TokenService {
 		if deltas, let lastId = lastResultId {
 			let params = SemanticTokensDeltaParams(textDocument: id, previousResultId: lastId)
 
-			return try await server.semanticTokensFullDelta(params: params)
+			return try await server.semanticTokensFullDelta(params)
 		}
 
 		let params = SemanticTokensParams(textDocument: id)
 
 		// translate into a delta response
-		return try await server.semanticTokensFull(params: params).map { .optionA($0) }
+		return try await server.semanticTokensFull(params).map { .optionA($0) }
 	}
 
 	func tokens(in range: CombinedTextRange) async throws -> [ChimeExtensionInterface.Token] {

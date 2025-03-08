@@ -5,15 +5,13 @@ import ChimeExtensionInterface
 import JSONRPC
 import LanguageClient
 import LanguageServerProtocol
-import LSPClient
 import Queue
 
 @MainActor
 final class LSPProjectService {
 	typealias Server = LanguageClient.RestartingServer<JSONRPCServerConnection>
 
-	private let executionParamsProvider: LSPService.ExecutionParamsProvider
-	private let runInUserShell: Bool
+	private let execution: LSPService.Execution
 	private let serverOptions: any Codable
 	private let transformers: LSPTransformers
 	private let host: HostProtocol
@@ -41,16 +39,14 @@ final class LSPProjectService {
 		host: HostProtocol,
 		serverOptions: any Codable = [:] as [String: String],
 		transformers: LSPTransformers = .init(),
-		executionParamsProvider: @escaping LSPService.ExecutionParamsProvider,
-		runInUserShell: Bool,
+		execution: LSPService.Execution,
 		logMessages: Bool
 	) {
 		self.context = context
 		self.host = host
 		self.serverOptions = serverOptions
 		self.transformers = transformers
-		self.executionParamsProvider = executionParamsProvider
-		self.runInUserShell = runInUserShell
+		self.execution = execution
 		self.logMessages = logMessages
 
 		let eventSequence = serverHostInterface.server.eventSequence
@@ -86,14 +82,14 @@ final class LSPProjectService {
 }
 
 extension LSPProjectService {
-	private nonisolated func nonisolatedConnectionInvalidated() {
+	private nonisolated func nonisolatedConnectionInvalidated(_ error: Error?) {
 		Task {
-			await connectionInvalidated()
+			await connectionInvalidated(error)
 		}
 	}
 
-	private func connectionInvalidated() async {
-		logger.warning("channel connection invalidated")
+	private func connectionInvalidated(_ error: Error?) async {
+		logger.warning("channel connection invalidated: \(error, privacy: .public)")
 
 		await serverHostInterface.server.connectionInvalidated()
 	}
@@ -103,14 +99,41 @@ extension LSPProjectService {
 			throw LSPServiceError.unsupported
 		}
 
-		let terminationHandler: @Sendable () -> Void = { [weak self] in self?.nonisolatedConnectionInvalidated() }
+#if os(macOS)
+		switch execution {
+		case let .hosted(provider):
+			let params = try await provider()
 
-		let params = try await executionParamsProvider()
+			return try await DataChannel.hostedProcessChannel(
+				host: host,
+				parameters: params,
+				runInUserShell: false,
+				terminationHandler: { [weak self] in self?.nonisolatedConnectionInvalidated(nil) }
+			)
+		case let .hostedWithUserShell(provider):
+			let params = try await provider()
 
-		return try await DataChannel.hostedProcessChannel(host: host,
-														  parameters: params,
-														  runInUserShell: runInUserShell,
-														  terminationHandler: terminationHandler)
+			return try await DataChannel.hostedProcessChannel(
+				host: host,
+				parameters: params,
+				runInUserShell: true,
+				terminationHandler: { [weak self] in self?.nonisolatedConnectionInvalidated(nil) }
+			)
+		case let .unixScript(path: path, arguments: args):
+			return try DataChannel.userScriptChannel(
+				scriptPath: path,
+				arguments: args,
+				terminationHandler: { [weak self] in self?.nonisolatedConnectionInvalidated($0) }
+			)
+		}
+#else
+		return DataChannel(writeHandler: {
+			data in
+				throw LSPServiceError.unsupported
+			},
+			dataSequence: DataChannel.DataSequence(unfolding: { nil })
+		)
+#endif
 	}
 
 	private func loggingChannel(_ channel: DataChannel) -> DataChannel {
@@ -232,14 +255,17 @@ extension LSPProjectService {
 			logger.info("Server registration: \(registration.method.rawValue, privacy: .public)")
 
 			switch registration {
+#if os(macOS)
 			case let .workspaceDidChangeWatchedFiles(options):
 				setupFileWatchers(options.watchers)
+#endif
 			default:
 				break
 			}
 		}
 	}
 
+#if os(macOS)
 	private func setupFileWatchers(_ watchers: [FileSystemWatcher]) {
 		self.fileEventTasks = watchers.compactMap {
 			do {
@@ -257,14 +283,14 @@ extension LSPProjectService {
 				}
 			}
 		}
-
 	}
+#endif
 
 	private func handleFileEvent(_ event: FileEvent) {
 		let params = DidChangeWatchedFilesParams(changes: [event])
 
 		serverHostInterface.enqueue(barrier: true) { server, _, _ in
-			try await server.workspaceDidChangeWatchedFiles(params: params)
+			try await server.workspaceDidChangeWatchedFiles(params)
 		}
 	}
 
@@ -334,10 +360,14 @@ extension LSPProjectService: ApplicationService {
 		}
 
 		serverHostInterface.enqueue(barrier: true) { server, _, _ in
-			let item = try await docConnection.textDocumentItem
+			do {
+				let item = try await docConnection.textDocumentItem
 
-			let params = DidOpenTextDocumentParams(textDocument: item)
-			try await server.didOpenTextDocument(params: params)
+				let params = DidOpenTextDocumentParams(textDocument: item)
+				try await server.textDocumentDidOpen(params)
+			} catch {
+				self.logger.error("Failed to execute textDocumentDidOpen: \(error, privacy: .public)")
+			}
 		}
 	}
 
@@ -363,11 +393,11 @@ extension LSPProjectService: ApplicationService {
 			let id = try docContext.textDocumentIdentifier
 
 			let param = DidCloseTextDocumentParams(textDocument: id)
-			try await server.didCloseTextDocument(params: param)
+			try await server.textDocumentDidClose(param)
 		}
 	}
 
-	func documentService(for docContext: DocumentContext) throws -> DocumentService? {
+	func documentService(for docContext: DocumentContext) throws -> (some DocumentService)? {
 		let id = docContext.id
 		let conn = documentConnections[id]
 
@@ -379,7 +409,7 @@ extension LSPProjectService: ApplicationService {
 		return conn
 	}
 
-	func symbolService(for context: ProjectContext) throws -> SymbolQueryService? {
+	func symbolService(for context: ProjectContext) throws -> (some SymbolQueryService)? {
 		self
 	}
 }
@@ -389,7 +419,7 @@ extension LSPProjectService: SymbolQueryService {
 		try await serverHostInterface.operationValue { (server, transformers, _) in
 			// we have to request capabilities here, as the server may not be started at this
 			// point
-			let caps = try await server.initializeIfNeeded()
+			let caps = try await server.initializeIfNeeded().capabilities
 
 			switch caps.workspaceSymbolProvider {
 			case nil:
@@ -403,7 +433,7 @@ extension LSPProjectService: SymbolQueryService {
 			}
 
 			let params = WorkspaceSymbolParams(query: query)
-			let result = try await server.workspaceSymbol(params: params)
+			let result = try await server.workspaceSymbol(params)
 
 			return transformers.workspaceSymbolResponseTransformer(result)
 		}

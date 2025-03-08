@@ -1,10 +1,14 @@
-// swift-tools-version: 5.8
+// swift-tools-version: 5.9
 
 import PackageDescription
 
 let package = Package(
 	name: "ChimeKit",
-	platforms: [.macOS(.v11)],
+	platforms: [
+		.macOS(.v11),
+		.iOS(.v16),
+		.visionOS(.v1),
+	],
 	products: [
 		.library(name: "ChimeExtensionInterface", targets: ["ChimeExtensionInterface"]),
 		.library(name: "ChimeLSPAdapter", targets: ["ChimeLSPAdapter"]),
@@ -12,10 +16,10 @@ let package = Package(
 	],
 	dependencies: [
 		.package(url: "https://github.com/ChimeHQ/AsyncXPCConnection", from: "1.0.0"),
-		.package(url: "https://github.com/ChimeHQ/Extendable", from: "0.1.1"),
+		.package(url: "https://github.com/ChimeHQ/Extendable", from: "0.3.0"),
 		.package(url: "https://github.com/ChimeHQ/ProcessEnv", from: "1.0.0"),
-		.package(url: "https://github.com/ChimeHQ/LanguageClient", from: "0.7.0"),
-		.package(url: "https://github.com/ChimeHQ/LanguageServerProtocol", from: "0.11.0"),
+		.package(url: "https://github.com/ChimeHQ/LanguageClient", revision: "f1610f7074b74ca3c1d6abd586014626842f09c5"),
+		.package(url: "https://github.com/ChimeHQ/LanguageServerProtocol", from: "0.13.2"),
 		.package(url: "https://github.com/mattmassicotte/Queue", from: "0.1.4"),
 		.package(url: "https://github.com/ChimeHQ/JSONRPC", from: "0.9.0"),
 	],
@@ -29,14 +33,14 @@ let package = Package(
 		.testTarget(name: "ChimeExtensionInterfaceTests",
 					dependencies: [
 						"ChimeExtensionInterface",
-						"ProcessEnv",
+						.product(name: "ProcessEnv", package: "ProcessEnv", condition: .when(platforms: [.macOS])),
 					]),
 		.target(name: "ChimeLSPAdapter",
 				dependencies: [
 					"LanguageClient",
 					"LanguageServerProtocol",
 					"ChimeExtensionInterface",
-					"ProcessEnv",
+					.product(name: "ProcessEnv", package: "ProcessEnv", condition: .when(platforms: [.macOS])),
 					"Queue",
 					"JSONRPC",
 				]),

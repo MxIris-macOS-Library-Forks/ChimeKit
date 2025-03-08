@@ -1,7 +1,9 @@
 import XCTest
 
 import ChimeExtensionInterface
+#if canImport(ProcessEnv)
 import ProcessEnv
+#endif
 
 @available(macOS 13.0, *)
 final class ExampleNonUIExtension: ChimeExtension {
@@ -9,7 +11,7 @@ final class ExampleNonUIExtension: ChimeExtension {
 	}
 
 	var configuration: ExtensionConfiguration { ExtensionConfiguration() }
-	var applicationService: ApplicationService { return self }
+	var applicationService: some ApplicationService { return self }
 }
 
 extension ExampleNonUIExtension: ApplicationService {
@@ -28,12 +30,12 @@ extension ExampleNonUIExtension: ApplicationService {
 	func willCloseDocument(with context: DocumentContext) throws {
 	}
 	
-	func documentService(for context: DocumentContext) throws -> DocumentService? {
-		return nil
+	func documentService(for context: DocumentContext) throws -> (some DocumentService)? {
+		DocumentServicePlaceholder?.none
 	}
 	
-	func symbolService(for context: ProjectContext) throws -> SymbolQueryService? {
-		return nil
+	func symbolService(for context: ProjectContext) throws -> (some SymbolQueryService)? {
+		SymbolQueryServicePlaceholder?.none
 	}
 }
 
@@ -53,7 +55,7 @@ final class MockHost: HostProtocol {
         return ("", 1)
     }
 
-    func textBounds(for documentId: DocumentIdentity, in ranges: [ChimeExtensionInterface.TextRange], version: Int) async throws -> [NSRect] {
+    func textBounds(for documentId: DocumentIdentity, in ranges: [ChimeExtensionInterface.TextRange], version: Int) async throws -> [CGRect] {
         return []
     }
 
